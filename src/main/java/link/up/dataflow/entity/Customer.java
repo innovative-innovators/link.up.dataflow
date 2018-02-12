@@ -14,6 +14,6 @@ public class Customer implements Serializable {
 
     private String id;
     private String name;
-    private List<CreditCard> creditCards;
+//    private List<CreditCard> creditCards;
 }
 

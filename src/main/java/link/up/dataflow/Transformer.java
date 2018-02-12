@@ -1,24 +1,31 @@
 package link.up.dataflow;
 
+import link.up.dataflow.entity.CreditCard;
+import link.up.dataflow.entity.Customer;
 import link.up.dataflow.entity.TransactionRecord;
+import link.up.dataflow.utils.CreatorUtils;
 import link.up.dataflow.utils.Json2ObjectUtils;
 import link.up.dataflow.utils.Neo4JOpThread;
 import link.up.dataflow.utils.Neo4JUtils;
 import org.apache.beam.runners.dataflow.options.DataflowPipelineOptions;
 import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.DoFn;
-import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.windowing.AfterProcessingTime;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.Window;
+import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.sdk.values.TypeDescriptors;
+import org.apache.beam.sdk.values.PCollectionView;
 import org.joda.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Map;
 
 /**
  * Created by Vincent on 2018/2/11.
@@ -46,6 +53,10 @@ public class Transformer {
 
         void setPassword(String password);
 
+        String getBucket();
+
+        void setBucket(String bucket);
+
     }
 
     public static void main(String args[]) {
@@ -59,19 +70,68 @@ public class Transformer {
         myOptions.setStreaming(true);
         myOptions.setJobName("Pubsub-Linkup-demo");
 
+        String bucket = myOptions.getBucket();
+
         String neo4jurl = myOptions.getNeo4jUrl();
         String neo4jUserName = myOptions.getUserName();
         String neo4jPassword = myOptions.getPassword();
 
 
         /**
-         *  Create PIPELINE
+         *  Step #1 - Create PIPELINE
          */
         Pipeline pipeline = Pipeline.create(myOptions);
 
 
         /**
-         *  Read from PubSub
+         * Step #2 - Read from GCS for CUSTOMER & ACCOUNT_ASSOC info and convert to VIEW(map)
+         */
+
+        /**
+         *  Key  : Customer ID
+         *  Value: Customer Object
+         */
+
+        PCollectionView<Map<String, Customer>> customerView =
+                pipeline.apply("Read Customer Data", TextIO.read().from("gs://" + bucket + "/customer_info_dataset.csv"))
+                        .apply(
+                                ParDo.of(new DoFn<String, KV<String, Customer>>() {
+
+                                    @ProcessElement
+                                    public void process(ProcessContext context) {
+
+                                        String line = context.element();
+                                        String[] cells = line.split(",");
+                                        KV kv = KV.of(cells[0], CreatorUtils.createCustomer(line));
+                                        context.output(kv);
+                                    }
+                                })
+                        ).apply(View.<String, Customer>asMap());
+
+
+        /**
+         *  Key  : Account Number
+         *  Value: Credit Card Object
+         */
+        PCollectionView<Map<String, CreditCard>> creditCardView =
+                pipeline.apply("Read CreditCard Data", TextIO.read().from("gs://" + bucket + "/account_assoc_info_dataset.csv"))
+                        .apply(
+                                ParDo.of(new DoFn<String, KV<String, CreditCard>>() {
+
+                                    @ProcessElement
+                                    public void process(ProcessContext context) {
+
+                                        String line = context.element();
+                                        String[] cells = line.split(",");
+                                        KV kv = KV.of(cells[0], CreatorUtils.createCreditCard(line));
+                                        context.output(kv);
+                                    }
+                                })
+                        ).apply(View.<String, CreditCard>asMap());
+
+
+        /**
+         *  Step #3 - Read from PubSub
          */
 
         PCollection<TransactionRecord> txnInput = pipeline
@@ -94,29 +154,57 @@ public class Transformer {
                 }));
 
 
-        txnInput.apply("Manipulate Relationship", MapElements.into(TypeDescriptors.strings()).via(
-                (TransactionRecord record) ->
-                        Neo4JUtils.manipulateRelationshipFromTransactionRecord(record)
-        )).apply(
-                "Merge to Neo4j", ParDo.of(new DoFn<String, Void>() {
+        /**
+         *   Enrich CUSTOMER / ACCOUNT info for Neo4j nodes
+         *
+         *   Custom A / Account A is TRANSFER_FROM
+         *   Custom B / Account B is TRANSFER_TO
+         */
 
-                    @ProcessElement
-                    public void process(ProcessContext c) {
-                        logger.info(c.element());
+        txnInput.apply("Manipulate Relationship", ParDo.of(new DoFn<TransactionRecord, String>() {
+            @ProcessElement
+            public void process(ProcessContext context) {
 
-                        try {
-                            new Thread(
-                                    new Neo4JOpThread(neo4jurl, neo4jUserName, neo4jPassword)
-                                            .setLogMsg("Committed")
-                                            .setStatement(c.element())
-                            ).start();
+                Map<String, CreditCard> ccMap = context.sideInput(creditCardView);
+                Map<String, Customer> custMap = context.sideInput(customerView);
 
-                        } catch (Exception e) {
-                            logger.error(e.getLocalizedMessage());
-                        }
-                    }
-                })
-        );
+                TransactionRecord txn = context.element();
+
+                CreditCard ccA = ccMap.get(txn.getNameOrig());
+                CreditCard ccB = ccMap.get(txn.getNameDest());
+
+
+                context.output(Neo4JUtils.manipulateRelationshipFromTransactionRecord(
+                        txn,
+                        custMap.get(ccA.getCustomerId()),
+                        ccA,
+                        custMap.get(ccB.getCustomerId()),
+                        ccB));
+            }
+        }).withSideInputs(customerView, creditCardView))
+
+                // Execute MERGE to NEO4J
+                .apply(
+                        "Merge to Neo4j", ParDo.of(new DoFn<String, Void>() {
+
+                            @ProcessElement
+                            public void process(ProcessContext c) {
+                                logger.info(c.element());
+
+                                try {
+                                    new Thread(
+                                            new Neo4JOpThread(neo4jurl, neo4jUserName, neo4jPassword)
+                                                    .setLogMsg("Committed")
+                                                    .setStatement(c.element())
+                                    ).start();
+
+                                } catch (Exception e) {
+                                    logger.error(e.getLocalizedMessage());
+                                }
+                            }
+                        })
+                );
+
 
         pipeline.run();
 

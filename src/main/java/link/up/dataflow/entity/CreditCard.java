@@ -15,5 +15,6 @@ public class CreditCard implements Serializable {
     private String accountNumber;
     private String cardNumber;
     private String expirationDate;
+    private String customerId;
 
 }

@@ -40,6 +40,8 @@ public class Neo4JOpThread implements Runnable {
 
             logger.info(logMsg);
 
+        } catch (Exception e) {
+            logger.error(e.getLocalizedMessage());
         }
 
     }
