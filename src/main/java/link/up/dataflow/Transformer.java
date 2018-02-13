@@ -1,5 +1,8 @@
 package link.up.dataflow;
 
+import com.google.api.services.bigquery.model.TableFieldSchema;
+import com.google.api.services.bigquery.model.TableRow;
+import com.google.api.services.bigquery.model.TableSchema;
 import link.up.dataflow.entity.CreditCard;
 import link.up.dataflow.entity.Customer;
 import link.up.dataflow.entity.TransactionRecord;
@@ -10,21 +13,23 @@ import link.up.dataflow.utils.Neo4JUtils;
 import org.apache.beam.runners.dataflow.options.DataflowPipelineOptions;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
+import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.windowing.AfterProcessingTime;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.Window;
-import org.apache.beam.sdk.values.KV;
-import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.sdk.values.PCollectionView;
+import org.apache.beam.sdk.values.*;
 import org.joda.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -203,6 +208,55 @@ public class Transformer {
                                 }
                             }
                         })
+                );
+
+
+        /**
+         *  For Writing to BigQuery
+         */
+        List<TableFieldSchema> fields = new ArrayList<>();
+        fields.add(new TableFieldSchema().setName("step").setType("STRING"));
+        fields.add(new TableFieldSchema().setName("type").setType("STRING"));
+        fields.add(new TableFieldSchema().setName("amount").setType("FLOAT"));
+        fields.add(new TableFieldSchema().setName("nameOrig").setType("STRING"));
+        fields.add(new TableFieldSchema().setName("oldbalanceOrg").setType("FLOAT"));
+        fields.add(new TableFieldSchema().setName("newbalanceOrig").setType("FLOAT"));
+        fields.add(new TableFieldSchema().setName("nameDest").setType("STRING"));
+        fields.add(new TableFieldSchema().setName("oldbalanceDest").setType("FLOAT"));
+        fields.add(new TableFieldSchema().setName("newbalanceDest").setType("FLOAT"));
+        fields.add(new TableFieldSchema().setName("isFraud").setType("INTEGER"));
+        fields.add(new TableFieldSchema().setName("isFlaggedFraud").setType("INTEGER"));
+
+        TableSchema schema = new TableSchema().setFields(fields);
+
+
+        // Reformat to TableRow
+        txnInput.apply(
+                MapElements.into(new TypeDescriptor<TableRow>() {
+                }).via(
+                        (TransactionRecord record) -> {
+                            TableRow row = new TableRow();
+                            row.set("step", record.getStep())
+                                    .set("type", record.getType())
+                                    .set("amount", record.getAmount())
+                                    .set("nameOrig", record.getNameOrig())
+                                    .set("oldbalanceOrg", record.getOldbalanceOrg())
+                                    .set("newbalanceOrig", record.getNewbalanceOrig())
+                                    .set("nameDest", record.getNameDest())
+                                    .set("oldbalanceDest", record.getOldbalanceDest())
+                                    .set("newbalanceDest", record.getNewbalanceDest())
+                                    .set("isFraud", record.getIsFraud())
+                                    .set("isFlaggedFraud", record.getIsFlaggedFraud());
+
+                            return row;
+                        }
+                ))
+                // Write to BigQuery
+                .apply(BigQueryIO.writeTableRows()
+                        .to(projectId + ":link_up_dataset.transactions")
+                        .withSchema(schema)
+                        .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
+                        .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
                 );
 
 
