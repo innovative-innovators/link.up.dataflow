@@ -57,12 +57,12 @@ node {
         wrap([$class: 'MaskPasswordsBuildWrapper',
                 varPasswordPairs: [[password: "${neo4j_password}", var: 'password']]
         ]) {
-            sh("Project is : ${project}")
-            sh("Topic is : ${topic}")
-            sh("Bucket is : ${bucket}")
-            sh("Neo4J URL is : ${neo4j_url}")
-            sh("Neo4J UserName is : ${neo4j_username}")
-            sh("Neo4J Password is : ${neo4j_password}")
+            sh("echo \"Project is : ${project}\"")
+            sh("echo \"Topic is : ${topic}\"")
+            sh("echo \"Bucket is : ${bucket}\"")
+            sh("echo \"Neo4J URL is : ${neo4j_url}\"")
+            sh("echo \"Neo4J UserName is : ${neo4j_username}\"")
+            sh("echo \"Neo4J Password is : ${neo4j_password}\"")
         }
 
     }
