@@ -10,6 +10,7 @@ import java.io.Serializable;
 @Data
 public class TransactionRecord implements Serializable {
 
+    private int id;
     private int step;
     private String type;
     private double amount;

@@ -140,7 +140,7 @@ public class Transformer {
          */
 
         PCollection<TransactionRecord> txnInput = pipeline
-                .apply("ReceiveTransaction", PubsubIO.readStrings().fromTopic(topicName))
+                .apply("ReceiveTransaction", PubsubIO.readStrings().withIdAttribute("uniqId").fromTopic(topicName))
                 .apply("TimeWindow",
                         Window.<String>into(FixedWindows.of(Duration.millis(500)))
                                 .triggering(
@@ -215,6 +215,7 @@ public class Transformer {
          *  For Writing to BigQuery
          */
         List<TableFieldSchema> fields = new ArrayList<>();
+        fields.add(new TableFieldSchema().setName("id").setType("INTEGER"));
         fields.add(new TableFieldSchema().setName("step").setType("STRING"));
         fields.add(new TableFieldSchema().setName("type").setType("STRING"));
         fields.add(new TableFieldSchema().setName("amount").setType("FLOAT"));
@@ -236,7 +237,9 @@ public class Transformer {
                 }).via(
                         (TransactionRecord record) -> {
                             TableRow row = new TableRow();
-                            row.set("step", record.getStep())
+                            row
+                                    .set("id", record.getId())
+                                    .set("step", record.getStep())
                                     .set("type", record.getType())
                                     .set("amount", record.getAmount())
                                     .set("nameOrig", record.getNameOrig())
