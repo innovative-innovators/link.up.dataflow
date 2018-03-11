@@ -15,11 +15,9 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
+import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
-import org.apache.beam.sdk.transforms.DoFn;
-import org.apache.beam.sdk.transforms.MapElements;
-import org.apache.beam.sdk.transforms.ParDo;
-import org.apache.beam.sdk.transforms.View;
+import org.apache.beam.sdk.transforms.*;
 import org.apache.beam.sdk.transforms.windowing.AfterProcessingTime;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.Window;
@@ -28,6 +26,7 @@ import org.joda.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -140,21 +139,26 @@ public class Transformer {
          */
 
         PCollection<TransactionRecord> txnInput = pipeline
-                .apply("ReceiveTransaction", PubsubIO.readStrings().withIdAttribute("uniqId").fromTopic(topicName))
+                .apply("ReceiveTransaction", PubsubIO.readMessagesWithAttributes().withIdAttribute("id").fromTopic(topicName))
                 .apply("TimeWindow",
-                        Window.<String>into(FixedWindows.of(Duration.millis(500)))
+                        Window.<PubsubMessage>into(FixedWindows.of(Duration.millis(500)))
                                 .triggering(
                                         AfterProcessingTime.pastFirstElementInPane()
                                                 .plusDelayOf(Duration.millis(500))
-                                ).withAllowedLateness(Duration.millis(100))
+                                )
+                                .withAllowedLateness(Duration.millis(100))
                                 .accumulatingFiredPanes()
                 )
-                .apply("Convert to TransactionRecord", ParDo.of(new DoFn<String, TransactionRecord>() {
+                .apply("Convert to TransactionRecord", ParDo.of(new DoFn<PubsubMessage, TransactionRecord>() {
 
                     @ProcessElement
                     public void processElement(ProcessContext c) throws Exception {
-                        logger.info("Transaction string is :" + c.element());
-                        c.output(Json2ObjectUtils.convertTo(c.element())); // Deliver propagation
+
+                        String recordContent = new String(c.element().getPayload(), StandardCharsets.UTF_8);
+
+                        TransactionRecord r = Json2ObjectUtils.convertTo(recordContent);
+                        logger.info("Transaction string is :" + c.element() + "; With ID:" + r.getId());
+                        c.output(r); // Deliver propagation
                     }
                 }));
 
